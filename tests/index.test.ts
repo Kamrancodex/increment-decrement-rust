@@ -6,41 +6,66 @@ import {
   SystemProgram,
   Transaction,
 } from "@solana/web3.js";
-import { COUNTER_SIZE } from "./types";
+import { COUNTER_SIZE, schema } from "./types";
+import * as borsh from "borsh";
 
-let adminAccount = Keypair.generate();
-let dataAccount = Keypair.generate();
+const adminAccount = Keypair.generate();
+const dataAccount = Keypair.generate();
 
 const PROGRAM_ID = new PublicKey(
   "GnmNRqFoofYfnSMkF7YWpBnxMAdbiH67AnLBeLcXnkXt"
 );
 
-const connection = new Connection("http://127.0.0.1:8899");
-test("Account is Initialized", async () => {
-  const txn = await connection.requestAirdrop(
-    adminAccount.publicKey,
-    1 * 1000000000
-  );
-  await connection.confirmTransaction(txn);
-  const data = await connection.getAccountInfo(adminAccount.publicKey);
+const connection = new Connection("http://127.0.0.1:8899", "confirmed");
 
+test("Account is Initialized", async () => {
+  // Airdrop
+  const sig = await connection.requestAirdrop(
+    adminAccount.publicKey,
+    1_000_000_000
+  );
+
+  const latest = await connection.getLatestBlockhash();
+  await connection.confirmTransaction({
+    signature: sig,
+    blockhash: latest.blockhash,
+    lastValidBlockHeight: latest.lastValidBlockHeight,
+  });
+
+  // Rent exemption
   const lamports = await connection.getMinimumBalanceForRentExemption(
     COUNTER_SIZE
   );
 
   const ix = SystemProgram.createAccount({
     fromPubkey: adminAccount.publicKey,
+    newAccountPubkey: dataAccount.publicKey,
     lamports,
     space: COUNTER_SIZE,
     programId: PROGRAM_ID,
-    newAccountPubkey: dataAccount.publicKey,
   });
-  const createAccountTx = new Transaction();
-  createAccountTx.add(ix);
-  const signature = await connection.sendTransaction(createAccountTx, [
+
+  const tx = new Transaction().add(ix);
+  tx.feePayer = adminAccount.publicKey;
+  tx.recentBlockhash = latest.blockhash;
+
+  const signature = await connection.sendTransaction(tx, [
     adminAccount,
     dataAccount,
   ]);
-  await connection.confirmTransaction(signature);
-  console.log(dataAccount.publicKey);
+
+  await connection.confirmTransaction({
+    signature,
+    blockhash: latest.blockhash,
+    lastValidBlockHeight: latest.lastValidBlockHeight,
+  });
+
+  console.log("Account created:", dataAccount.publicKey.toBase58());
+
+  const dataAccountInfo = await connection.getAccountInfo(
+    dataAccount.publicKey
+  );
+  const counter = borsh.deserialize(schema, dataAccountInfo?.data);
+  console.log(counter.count);
+  expect(counter.count).toBe(0);
 });
